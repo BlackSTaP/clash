@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>VLESS → Clash конфиг</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background-color: #121212;
+      color: #e0e0e0;
+      padding: 40px;
+    }
+    .container {
+      max-width: 800px;
+      margin: auto;
+      background-color: #1e1e1e;
+      padding: 30px 40px;
+      border-radius: 12px;
+      box-shadow: 0 0 20px rgba(0,0,0,0.6);
+    }
+    h1 {
+      text-align: center;
+      color: #4fc3f7;
+    }
+    textarea, input {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      font-size: 14px;
+      border-radius: 6px;
+      border: 1px solid #333;
+      background-color: #2a2a2a;
+      color: #e0e0e0;
+      resize: vertical;
+    }
+    button {
+      background-color: #4fc3f7;
+      color: #000;
+      border: none;
+      padding: 12px 20px;
+      font-size: 16px;
+      margin-top: 15px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #29b6f6;
+    }
+    label {
+      font-weight: bold;
+      display: block;
+      margin-top: 20px;
+    }
+    .output-section {
+      margin-top: 30px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>VLESS → Clash YAML Конвертер</h1>
+    <label for="vlessLink">Вставь VLESS-ссылку:</label>
+    <textarea id="vlessLink" rows="4" placeholder="vless://..."></textarea>
+    <button onclick="generateConfig()">Сгенерировать конфиг</button>
+
+    <div class="output-section">
+      <label for="output">Готовый YAML:</label>
+      <textarea id="output" rows="24" readonly></textarea>
+      <button onclick="downloadConfig()">Скачать YAML</button>
+    </div>
+  </div>
+
+  <script>
+    function parseVLESS(link) {
+      try {
+        if (!link.startsWith('vless://')) return null;
+        const url = new URL(link.replace('vless://', 'https://'));
+        const uuid = url.username;
+        const server = url.hostname;
+        const port = url.port;
+        const params = Object.fromEntries(new URLSearchParams(url.search));
+        const name = decodeURIComponent(link.split('#')[1] || 'VLESS');
+        return {
+          uuid,
+          server,
+          port,
+          type: params.type,
+          security: params.security,
+          publicKey: params.pbk,
+          fp: params.fp,
+          sni: params.sni,
+          sid: params.sid,
+          spx: params.spx,
+          flow: params.flow || 'xtls-rprx-vision',
+          name
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    function generateConfig() {
+      const input = document.getElementById('vlessLink').value.trim();
+      const data = parseVLESS(input);
+
+      if (!data) {
+        alert("Ошибка: неверная VLESS-ссылка");
+        return;
+      }
+
+      const yaml = `# ---------- GENERAL ----------
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+
+# ---------- DNS ----------
+dns:
+  enable: true
+  listen: 0.0.0.0:53
+  default-nameserver:
+    - 1.1.1.1
+    - 8.8.8.8
+  nameserver:
+    - https://dns.google/dns-query
+    - https://cloudflare-dns.com/dns-query
+  fallback:
+    - 8.8.4.4
+    - 1.0.0.1
+  use-hosts: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+
+# ---------- PROXIES ----------
+proxies:
+  - name: "${data.name}"
+    type: vless
+    server: ${data.server}
+    port: ${data.port}
+    uuid: ${data.uuid}
+    udp: true
+    network: tcp
+    tls: true
+    flow: ${data.flow}
+    servername: ${data.sni}
+    client-fingerprint: ${data.fp}
+    reality-opts:
+      public-key: ${data.publicKey}
+      short-id: ${data.sid}
+      spider-x: ${data.spx}
+
+# ---------- PROXY GROUPS ----------
+proxy-groups:
+  - name: AUTO
+    type: url-test
+    url: "http://www.gstatic.com/generate_204"
+    interval: 300
+    tolerance: 50
+    proxies:
+      - "${data.name}"
+
+  - name: SELECT
+    type: select
+    proxies:
+      - AUTO
+      - "${data.name}"
+      - DIRECT
+
+  - name: PROXY
+    type: select
+    proxies:
+      - SELECT
+
+# ---------- RULES ----------
+rules:
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT
+  - IP-CIDR,10.0.0.0/8,DIRECT
+  - IP-CIDR,172.16.0.0/12,DIRECT
+  - IP-CIDR,192.168.0.0/16,DIRECT
+  - IP-CIDR,100.64.0.0/10,DIRECT
+  - IP-CIDR6,::1/128,DIRECT
+  - IP-CIDR6,fc00::/7,DIRECT
+  - MATCH,PROXY`;
+
+      document.getElementById('output').value = yaml;
+    }
+
+    function downloadConfig() {
+      const content = document.getElementById('output').value;
+      if (!content) {
+        alert("Сначала сгенерируй конфиг.");
+        return;
+      }
+      const blob = new Blob([content], { type: 'text/yaml' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = "config.yaml";
+      a.click();
+    }
+  </script>
+</body>
+</html>

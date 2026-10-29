@@ -82,120 +82,210 @@
         <h1>VLESS to Clash YAML Converter</h1>
         <label for="vlessInput">Enter VLESS String:</label>
         <input type="text" id="vlessInput" placeholder="vless://uuid@server:port?...">
-        <button onclick="convertVless()">Convert</button>
+        <button id="convertBtn">Convert</button>
         <pre id="output"></pre>
-        <button id="downloadBtn" class="hidden" onclick="downloadYaml()">Download Config YAML</button>
+        <button id="downloadBtn" class="hidden">Download Config YAML</button>
     </div>
 
     <script>
         function parseVless(url) {
-            const regex = /^vless:\/\/([^@]+)@([^:]+):(\d+)\?(.*)#(.*)$/;
-            const match = url.match(regex);
-            if (!match) {
+            url = url.trim();
+            if (!/^vless:\/\//i.test(url)) {
                 throw new Error("Invalid VLESS URL");
             }
 
-            const [, uuid, server, port, queryString, name] = match;
-            const params = new URLSearchParams(queryString);
+            const match = url.match(/^vless:\/\/([^@]+)@([^:]+):(\d+)\?([^#]*)#(.*)$/);
+            if (!match) {
+                throw new Error("Invalid VLESS URL format");
+            }
 
-            return {
-                name: name.trim() || "VPN-Black",
+            const uuid = match[1];
+            const server = match[2];
+            const port = parseInt(match[3], 10);
+            const params = new URLSearchParams(match[4]);
+            const name = decodeURIComponent(match[5]).trim() || "VPN";
+
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(uuid)) {
+                throw new Error("Invalid UUID");
+            }
+
+            if (!Number.isInteger(port) || port < 1 || port > 65535) {
+                throw new Error("Invalid port");
+            }
+
+            const security = (params.get("security") || "none").toLowerCase();
+            const network = (params.get("type") || "tcp").toLowerCase();
+
+            const proxy = {
+                name: name,
                 type: "vless",
                 server: server,
-                port: parseInt(port),
+                port: port,
                 uuid: uuid,
-                network: params.get("type") || "tcp",
-                tls: params.get("security") === "reality" || params.get("security") === "tls",
-                realityOpts: {
-                    publicKey: params.get("pbk") || "",
-                    shortId: params.get("sid") || "",
-                    spiderX: params.get("spx") || "/"
-                },
-                servername: params.get("sni") || "",
-                flow: params.get("flow") || "xtls-rprx-vision",
-                udp: true,
-                clientFingerprint: params.get("fp") || "chrome"
+                network: network,
+                tls: security === "reality" || security === "tls",
+                udp: true
             };
+
+            if (security === "reality") {
+                const publicKey = params.get("pbk");
+                const shortId = params.get("sid");
+
+                if (!publicKey) {
+                    throw new Error("REALITY requires pbk");
+                }
+
+                if (!shortId) {
+                    throw new Error("REALITY requires sid");
+                }
+
+                proxy.realityOpts = {
+                    publicKey: publicKey,
+                    shortId: shortId
+                };
+
+                if (params.get("sni")) {
+                    proxy.servername = params.get("sni");
+                }
+
+                if (params.get("fp")) {
+                    proxy.clientFingerprint = params.get("fp");
+                }
+
+                if (params.get("support-x25519mlkem768") === "true") {
+                    proxy.supportX25519 = true;
+                }
+            } else if (security === "tls") {
+                if (params.get("sni")) {
+                    proxy.servername = params.get("sni");
+                }
+
+                if (params.get("fp")) {
+                    proxy.clientFingerprint = params.get("fp");
+                }
+            } else if (params.get("pbk") || params.get("sid")) {
+                throw new Error("REALITY parameters found but security is not reality");
+            }
+
+            const flow = params.get("flow");
+
+            if (flow) {
+                if (flow !== "xtls-rprx-vision") {
+                    throw new Error("Unsupported flow: " + flow);
+                }
+
+                if (network !== "tcp") {
+                    throw new Error("flow is only supported with TCP");
+                }
+
+                proxy.flow = flow;
+            }
+
+            return proxy;
+        }
+
+        function quote(value) {
+            return JSON.stringify(String(value));
         }
 
         function generateYaml(proxy) {
-            return `port: 7890
-socks-port: 7891
-redir-port: 7892
-mixed-port: 7893
-allow-lan: true
-mode: Rule
-log-level: info
-external-controller: 127.0.0.1:9090
-secret: ""
+            let yaml = "";
+            yaml += "port: 7890\n";
+            yaml += "socks-port: 7891\n";
+            yaml += "mixed-port: 7893\n";
+            yaml += "allow-lan: true\n";
+            yaml += "mode: Rule\n";
+            yaml += "log-level: info\n";
+            yaml += "external-controller: 127.0.0.1:9090\n";
+            yaml += "secret: \"\"\n\n";
 
-dns:
-  enable: true
-  listen: 0.0.0.0:53
-  default-nameserver:
-    - 1.1.1.1
-    - 8.8.8.8
-  nameserver:
-    - https://dns.cloudflare.com/dns-query
-    - https://dns.google/dns-query
-  enhanced-mode: fake-ip
-  fake-ip-filter:
-    - "+.*"
+            yaml += "dns:\n";
+            yaml += "  enable: true\n";
+            yaml += "  listen: 0.0.0.0:53\n";
+            yaml += "  default-nameserver:\n";
+            yaml += "    - 1.1.1.1\n";
+            yaml += "    - 8.8.8.8\n";
+            yaml += "  nameserver:\n";
+            yaml += "    - https://dns.cloudflare.com/dns-query\n";
+            yaml += "    - https://dns.google/dns-query\n";
+            yaml += "  enhanced-mode: fake-ip\n";
+            yaml += "  fake-ip-filter:\n";
+            yaml += "    - \"+.*\"\n\n";
 
-proxies:
-  - name: "${proxy.name}"
-    type: ${proxy.type}
-    server: ${proxy.server}
-    port: ${proxy.port}
-    uuid: ${proxy.uuid}
-    network: ${proxy.network}
-    tls: ${proxy.tls}
-    reality-opts:
-      public-key: ${proxy.realityOpts.publicKey}
-      short-id: ${proxy.realityOpts.shortId}
-      spider-x: ${proxy.realityOpts.spiderX}
-    servername: ${proxy.servername}
-    flow: ${proxy.flow}
-    udp: ${proxy.udp}
-    client-fingerprint: ${proxy.clientFingerprint}
+            yaml += "proxies:\n";
+            yaml += "  - name: " + quote(proxy.name) + "\n";
+            yaml += "    type: vless\n";
+            yaml += "    server: " + quote(proxy.server) + "\n";
+            yaml += "    port: " + proxy.port + "\n";
+            yaml += "    uuid: " + quote(proxy.uuid) + "\n";
+            yaml += "    network: " + proxy.network + "\n";
+            yaml += "    tls: " + proxy.tls + "\n";
 
-proxy-groups:
-  - name: "🔰 Proxy"
-    type: select
-    proxies:
-      - ${proxy.name}
-      - DIRECT
+            if (proxy.realityOpts) {
+                yaml += "    reality-opts:\n";
+                yaml += "      public-key: " + quote(proxy.realityOpts.publicKey) + "\n";
+                yaml += "      short-id: " + quote(proxy.realityOpts.shortId) + "\n";
 
-rules:
-  - DOMAIN-SUFFIX,google.com,🔰 Proxy
-  - DOMAIN-SUFFIX,youtube.com,🔰 Proxy
-  - DOMAIN-KEYWORD,facebook,🔰 Proxy
-  - DOMAIN-SUFFIX,github.com,🔰 Proxy
-  - GEOIP,CN,DIRECT
-  - MATCH,🔰 Proxy`;
+                if (proxy.supportX25519) {
+                    yaml += "      support-x25519mlkem768: true\n";
+                }
+            }
+
+            if (proxy.servername) {
+                yaml += "    servername: " + quote(proxy.servername) + "\n";
+            }
+
+            if (proxy.flow) {
+                yaml += "    flow: " + proxy.flow + "\n";
+            }
+
+            if (proxy.clientFingerprint) {
+                yaml += "    client-fingerprint: " + quote(proxy.clientFingerprint) + "\n";
+            }
+
+            yaml += "    udp: true\n\n";
+
+            yaml += "proxy-groups:\n";
+            yaml += "  - name: \"🔰 Proxy\"\n";
+            yaml += "    type: select\n";
+            yaml += "    proxies:\n";
+            yaml += "      - " + quote(proxy.name) + "\n";
+            yaml += "      - DIRECT\n\n";
+
+            yaml += "rules:\n";
+            yaml += "  - DOMAIN-SUFFIX,google.com,🔰 Proxy\n";
+            yaml += "  - DOMAIN-SUFFIX,youtube.com,🔰 Proxy\n";
+            yaml += "  - DOMAIN-KEYWORD,facebook,🔰 Proxy\n";
+            yaml += "  - DOMAIN-SUFFIX,github.com,🔰 Proxy\n";
+            yaml += "  - GEOIP,CN,DIRECT\n";
+            yaml += "  - MATCH,🔰 Proxy\n";
+
+            return yaml;
         }
 
         function redactYaml(yaml) {
-            return yaml.replace(/uuid: .*/g, 'uuid: [REDACTED]')
-                       .replace(/public-key: .*/g, 'public-key: [REDACTED]')
-                       .replace(/short-id: .*/g, 'short-id: [REDACTED]')
-                       .replace(/server: .*/g, 'server: [REDACTED]');
+            return yaml
+                .replace(/^(    server: ).*$/m, "$1[REDACTED]")
+                .replace(/^(    uuid: ).*$/m, "$1[REDACTED]")
+                .replace(/^(      public-key: ).*$/m, "$1[REDACTED]")
+                .replace(/^(      short-id: ).*$/m, "$1[REDACTED]");
         }
 
         let fullYaml = "";
 
         function convertVless() {
-            const vlessUrl = document.getElementById("vlessInput").value.trim();
-            if (!vlessUrl) {
+            const input = document.getElementById("vlessInput").value.trim();
+
+            if (!input) {
                 alert("Please enter a VLESS string.");
                 return;
             }
 
             try {
-                const proxy = parseVless(vlessUrl);
+                const proxy = parseVless(input);
                 fullYaml = generateYaml(proxy);
-                const redactedYaml = redactYaml(fullYaml);
-                document.getElementById("output").textContent = redactedYaml;
+
+                document.getElementById("output").textContent = redactYaml(fullYaml);
                 document.getElementById("downloadBtn").classList.remove("hidden");
             } catch (error) {
                 alert(error.message);
@@ -203,16 +293,24 @@ rules:
         }
 
         function downloadYaml() {
+            if (!fullYaml) {
+                return;
+            }
+
             const blob = new Blob([fullYaml], { type: "text/yaml" });
             const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "clash-config.yaml";
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
+            const link = document.createElement("a");
+
+            link.href = url;
+            link.download = "clash-config.yaml";
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
             URL.revokeObjectURL(url);
         }
+
+        document.getElementById("convertBtn").addEventListener("click", convertVless);
+        document.getElementById("downloadBtn").addEventListener("click", downloadYaml);
     </script>
 </body>
 </html>
